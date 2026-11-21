@@ -82,6 +82,10 @@ if (isStdio) {
   // ─── Express setup ───────────────────────────────────────────────────────────
   app.use(express.json());
 
+  app.get("/", (_req, res) => {
+    res.redirect(301, "https://eyedia.de/mcp-integration");
+  });
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", server: "eyedia-mcp", version: "1.0.0" });
   });
