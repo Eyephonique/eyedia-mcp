@@ -29,8 +29,8 @@ if (isStdio) {
   );
 
   // ─── Rate limiting (in-memory, per key) ─────────────────────────────────────
-  const RATE_LIMIT = 60; // requests per window
-  const RATE_WINDOW_MS = 60_000; // 1 minute
+  const RATE_LIMIT = 10; // requests per window
+  const RATE_WINDOW_MS = 86_400_000; // 24 hours
   const rateLimits = new Map<string, { count: number; resetAt: number }>();
 
   function checkRateLimit(key: string): boolean {
@@ -51,7 +51,7 @@ if (isStdio) {
     for (const [key, entry] of rateLimits) {
       if (entry.resetAt < now) rateLimits.delete(key);
     }
-  }, 5 * 60_000);
+  }, 60 * 60_000); // cleanup every hour
 
   // ─── Auth middleware ─────────────────────────────────────────────────────────
   function authMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -71,8 +71,8 @@ if (isStdio) {
     }
     if (!checkRateLimit(key)) {
       res.status(429).json({
-        error: `Rate limit exceeded: max ${RATE_LIMIT} requests per minute`,
-        retryAfter: 60,
+        error: `Rate limit exceeded: max ${RATE_LIMIT} requests per day`,
+        retryAfter: 86400,
       });
       return;
     }
