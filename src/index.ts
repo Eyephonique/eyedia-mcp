@@ -86,6 +86,37 @@ if (isStdio) {
     res.json({ status: "ok", server: "eyedia-mcp", version: "1.0.0" });
   });
 
+  app.get("/.well-known/mcp-server-card.json", (_req, res) => {
+    res.json({
+      "@context": "https://agenticresourcediscovery.org/context/v1",
+      schema: "mcp-server-card/v1",
+      name: "eyedia Website Checker",
+      version: "1.0.0",
+      description: "AI-readiness audit for websites: validates ARD discovery files, llms.txt, Schema.org JSON-LD, and rel=\"ard\" link tags.",
+      publisher: "eyedia",
+      publisherUrl: "https://eyedia.de",
+      endpoint: "https://mcp.eyedia.de/mcp",
+      auth: {
+        type: "bearer",
+        description: "API key required. Contact hallo@eyedia.de to request access."
+      },
+      tools: [
+        {
+          name: "check_ard",
+          description: "Validates ard.json and ai-catalog.json entries (URN format, required fields) and checks rel=\"ard\" in HTML head."
+        },
+        {
+          name: "check_llms_txt",
+          description: "Fetches /llms.txt and returns its content."
+        },
+        {
+          name: "check_ai_readiness",
+          description: "Full audit: ARD, llms.txt, robots.txt, Schema.org JSON-LD, rel=\"ard\". Returns score and improvement suggestions."
+        }
+      ]
+    });
+  });
+
   // MCP endpoint — POST for requests, GET for SSE streams
   app.post("/mcp", authMiddleware, async (req, res) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
