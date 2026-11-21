@@ -1,16 +1,111 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import fetch from "node-fetch";
+import dns from "node:dns";
+import net from "node:net";
 
 type FetchResult = { ok: boolean; status: number; text: string };
 
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_REDIRECTS = 5;
+
+function ipToLong(ip: string): number {
+  return ip.split(".").reduce((acc, octet) => ((acc << 8) | parseInt(octet, 10)) >>> 0, 0) >>> 0;
+}
+
+function isPrivateIp(ip: string): boolean {
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1") return true;
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA fc00::/7
+    if (lower.startsWith("fe80")) return true; // link-local fe80::/10
+    const v4mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4mapped) return isPrivateIp(v4mapped[1]);
+    return false;
+  }
+  if (!net.isIPv4(ip)) return true; // unknown format — block
+  const n = ipToLong(ip);
+  const ranges: [string, number][] = [
+    ["0.0.0.0",       8],  // this network
+    ["10.0.0.0",      8],  // RFC 1918
+    ["100.64.0.0",   10],  // shared/CGN
+    ["127.0.0.0",     8],  // loopback
+    ["169.254.0.0",  16],  // link-local / AWS metadata
+    ["172.16.0.0",   12],  // RFC 1918
+    ["192.168.0.0",  16],  // RFC 1918
+    ["198.18.0.0",   15],  // benchmarking
+    ["240.0.0.0",     4],  // reserved
+    ["255.255.255.255", 32], // broadcast
+  ];
+  for (const [base, prefix] of ranges) {
+    const mask = prefix === 32 ? 0xffffffff : (~((1 << (32 - prefix)) - 1)) >>> 0;
+    if ((n & mask) === (ipToLong(base) & mask)) return true;
+  }
+  return false;
+}
+
+async function validateUrl(urlStr: string): Promise<void> {
+  let parsed: URL;
+  try { parsed = new URL(urlStr); } catch { throw new Error("Invalid URL"); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Only http/https URLs are allowed");
+  }
+  const hostname = parsed.hostname;
+  if (net.isIP(hostname) !== 0) {
+    if (isPrivateIp(hostname)) throw new Error("Access to private IP ranges is not allowed");
+    return;
+  }
+  let addresses: dns.LookupAddress[];
+  try {
+    addresses = await dns.promises.lookup(hostname, { all: true });
+  } catch {
+    throw new Error(`Cannot resolve hostname: ${hostname}`);
+  }
+  for (const { address } of addresses) {
+    if (isPrivateIp(address)) throw new Error(`Hostname resolves to a private address (${address})`);
+  }
+}
+
 async function tryFetch(url: string): Promise<FetchResult> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    return { ok: res.ok, status: res.status, text: res.ok ? await res.text() : "" };
-  } catch {
-    return { ok: false, status: 0, text: "" };
+    await validateUrl(url);
+  } catch (e) {
+    return { ok: false, status: 0, text: String((e as Error).message) };
   }
+  let currentUrl = url;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    let res: Awaited<ReturnType<typeof fetch>>;
+    try {
+      res = await fetch(currentUrl, { signal: AbortSignal.timeout(8000), redirect: "manual" });
+    } catch {
+      return { ok: false, status: 0, text: "" };
+    }
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) return { ok: false, status: res.status, text: "" };
+      const nextUrl = new URL(location, currentUrl).toString();
+      try { await validateUrl(nextUrl); } catch (e) {
+        return { ok: false, status: 0, text: String((e as Error).message) };
+      }
+      currentUrl = nextUrl;
+      continue;
+    }
+    if (!res.ok) return { ok: false, status: res.status, text: "" };
+    // Read body with size cap
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      for await (const chunk of res.body as AsyncIterable<Buffer>) {
+        total += chunk.length;
+        chunks.push(chunk);
+        if (total >= MAX_RESPONSE_BYTES) break;
+      }
+    } catch {
+      return { ok: false, status: res.status, text: "" };
+    }
+    return { ok: true, status: res.status, text: Buffer.concat(chunks).toString("utf-8") };
+  }
+  return { ok: false, status: 0, text: "Too many redirects" };
 }
 
 export function createServer(): McpServer {
